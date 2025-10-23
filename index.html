@@ -69,9 +69,10 @@
             box-sizing: border-box;
             background-color: #f9fafb;
             overflow: hidden; 
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
+            /* Usunięto właściwości flex, aby panzoom mógł w pełni kontrolować pozycjonowanie */
+            /* display: flex; */
+            /* justify-content: center; */
+            /* align-items: flex-start; */
             cursor: grab;
         }
 
@@ -165,6 +166,21 @@
             // Klucz do localStorage
             const storageKey = 'mermaidEditorContent';
             
+            // --- NOWA LOGIKA: Klucz i zmienna dla stanu pan/zoom ---
+            const transformStorageKey = 'mermaidEditorTransform';
+            let savedTransform = null;
+
+            const loadedTransform = localStorage.getItem(transformStorageKey);
+            if (loadedTransform) {
+                try {
+                    savedTransform = JSON.parse(loadedTransform);
+                } catch (e) {
+                    console.error('Błąd parsowania zapisanego stanu transformacji:', e);
+                    localStorage.removeItem(transformStorageKey); // Wyczyść błędne dane
+                }
+            }
+            // --- Koniec nowej logiki ---
+            
             // --- LOGIKA ZMIANY ROZMIARU PANELI ---
             let isResizing = false;
 
@@ -248,22 +264,102 @@
                     const svgId = 'mermaid-svg-' + new Date().getTime();
                     const { svg } = await mermaid.render(svgId, code);
 
+                    // --- ZMODYFIKOWANA LOGIKA: Zapisz stary stan PRZED zniszczeniem ---
+                    let oldTransform = null;
                     // 1. Zniszcz (dispose) starą instancję panzoom, jeśli istnieje
                     if (pzInstance) {
+                        oldTransform = pzInstance.getTransform(); // Zapisz pozycję
                         pzInstance.dispose(); // POPRAWKA: destroy -> dispose
                     }
 
                     // 2. Wstaw nowe SVG do kontenera
                     mermaidContainer.innerHTML = svg;
 
+                    // --- ZMODYFIKOWANA LOGIKA: Użyj zapisanego stanu lub dopasuj do ekranu ---
+                    let initialScale = 1;
+                    let initialX = 0;
+                    let initialY = 0;
+
+                    // Sprawdź, czy mamy zapisany stan z POPRZEDNIEGO renderowania
+                    if (oldTransform) {
+                        initialScale = oldTransform.scale;
+                        initialX = oldTransform.x;
+                        initialY = oldTransform.y;
+                    
+                    // Jeśli nie, sprawdź, czy mamy zapisany stan z localStorage (pierwsze ładowanie)
+                    } else if (savedTransform) {
+                        // Jeśli tak, użyj go
+                        initialScale = savedTransform.scale;
+                        initialX = savedTransform.x;
+                        initialY = savedTransform.y;
+                        
+                        // Wyczyść zapisany stan, aby kolejne renderowania (po zmianie tekstu)
+                        // nie używały logiki "zoom-to-fit", a nie starej pozycji.
+                        savedTransform = null; 
+
+                    } else {
+                        // --- INACZEJ, użyj logiki "zoom-to-fit" ---
+                        const svgElement = mermaidContainer.querySelector('svg');
+                        const containerWidth = preview.clientWidth; // Użyj clientWidth/Height
+                        const containerHeight = preview.clientHeight;
+                        const padding = 0.95; // 95% wypełnienia
+
+                        // Upewnij się, że SVG istnieje i ma atrybuty width/height
+                        if (svgElement && svgElement.width && svgElement.width.baseVal && svgElement.height && svgElement.height.baseVal) {
+                            const svgWidth = svgElement.width.baseVal.value;
+                            const svgHeight = svgElement.height.baseVal.value;
+
+                            // Unikaj dzielenia przez zero, jeśli SVG ma zły rozmiar
+                            if (svgWidth > 0 && svgHeight > 0) {
+                                const scaleX = (containerWidth * padding) / svgWidth;
+                                const scaleY = (containerHeight * padding) / svgHeight;
+                                
+                                initialScale = Math.min(scaleX, scaleY); // Dopasuj do mniejszego wymiaru
+        
+                                // Oblicz pozycję (x, y), aby wyśrodkować
+                                const newSvgWidth = svgWidth * initialScale;
+                                const newSvgHeight = svgHeight * initialScale;
+                                
+                                initialX = (containerWidth - newSvgWidth) / 2;
+                                initialY = (containerHeight - newSvgHeight) / 2;
+                            }
+                        }
+                        // --- Koniec logiki "zoom-to-fit" ---
+                    }
+                    // --- Koniec zmodyfikowanej logiki ---
+
+
                     // 3. Stwórz NOWĄ instancję panzoom na kontenerze,
                     //    który TERAZ zawiera już SVG.
                     pzInstance = panzoom(mermaidContainer, {
-                        minZoom: 0.2, 
-                        maxZoom: 5,   
-                        bounds: true, 
-                        boundsPadding: 0.1
+                        // minZoom: 0.2, // Usunięto na życzenie użytkownika
+                        // maxZoom: 5,   // Usunięto na życzenie użytkownika
+                        // bounds: true, 
+                        // boundsPadding: 0.1,
+                        // Ustaw początkową skalę i pozycję
+                        initialX: initialX,
+                        initialY: initialY,
+                        initialZoom: initialScale,
+                        smoothScroll: false
                     });
+
+                    // --- NOWA LOGIKA: Dodaj listenery do zapisu stanu ---
+                    const saveTransform = () => {
+                        if (!pzInstance) return; // Upewnij się, że instancja wciąż istnieje
+                        const transform = pzInstance.getTransform();
+                        const transformState = {
+                            scale: transform.scale,
+                            x: transform.x,
+                            y: transform.y
+                        };
+                        // Zapisz w localStorage
+                        localStorage.setItem(transformStorageKey, JSON.stringify(transformState));
+                    };
+                    
+                    // Zapisuj stan po zakończeniu przesuwania lub zoomowania
+                    pzInstance.on('panend', saveTransform);
+                    pzInstance.on('zoom', saveTransform); // 'zoom' jest emitowany po zakończeniu zoomu
+                    // --- Koniec nowej logiki ---
 
                 } catch (error) {
                     console.error('Błąd renderowania Mermaid:', error);
@@ -293,5 +389,8 @@
 
 </body>
 </html>
+
+
+
 
 
